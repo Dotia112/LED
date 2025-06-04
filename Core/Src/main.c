@@ -48,10 +48,12 @@ I2C_HandleTypeDef hi2c1;
 
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
-osThreadId_t buttonTaskHandle;
-osThreadId_t ledTaskHandle;
-osThreadId_t lcdTaskHandle;
-osMessageQueueId_t buttonQueueHandle;
+
+
+//osMessageQueueId_t buttonQueueHandle;
+
+osSemaphoreId_t buttonSemaphoreHandle;
+
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
   .stack_size = 128 * 4,
@@ -98,10 +100,13 @@ void lcdTask(void *argument);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-const osMessageQueueAttr_t buttonQueue_attributes = {
+/*const osMessageQueueAttr_t buttonQueue_attributes = {
   .name = "buttonQueue"
-};
+}; */
 
+const osSemaphoreAttr_t buttonSemaphore_attributes = {
+  .name = "buttonSemaphore"
+};
 
 //volatile uint8_t button_pressed = 0;
 /* USER CODE END 0 */
@@ -141,7 +146,7 @@ int main(void)
     HD44780_Clear();
     HD44780_SetCursor(0,0);
     HD44780_PrintStr("BTN don't push");
-    buttonQueueHandle = osMessageQueueNew(1, sizeof(uint8_t), &buttonQueue_attributes);
+   /* buttonQueueHandle = osMessageQueueNew(1, sizeof(uint8_t), &buttonQueue_attributes); */
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -153,6 +158,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_SEMAPHORES */
   /* add semaphores, ... */
+  buttonSemaphoreHandle = osSemaphoreNew(1, 0, &buttonSemaphore_attributes);
   /* USER CODE END RTOS_SEMAPHORES */
 
   /* USER CODE BEGIN RTOS_TIMERS */
@@ -182,9 +188,7 @@ int main(void)
 
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
-  osThreadNew(buttonTask, NULL, &buttonTask_attributes);
-  osThreadNew(ledTask, NULL, &ledTask_attributes);
-  osThreadNew(lcdTask, NULL, &lcdTask_attributes);
+
   /* USER CODE END RTOS_EVENTS */
 
   /* Start scheduler */
@@ -338,75 +342,75 @@ void StartDefaultTask(void *argument)
 /* USER CODE END Header_StartTask02 */
 void buttonTask(void *argument)
 {
-    uint8_t state;
+    uint8_t last_state = GPIO_PIN_SET; // предполагаем, что кнопка не нажата
     for(;;)
     {
         uint8_t current_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_14);
-        state = (current_state == GPIO_PIN_RESET) ? 1 : 0;
-        osMessageQueuePut(buttonQueueHandle, &state, 0, 0);
+        if(current_state != last_state)
+        {
+            last_state = current_state;
+            osSemaphoreRelease(buttonSemaphoreHandle); // сигнал об изменении состояния
+        }
         osDelay(10);
     }
 }
 
-/* USER CODE BEGIN Header_StartTask03 */
-/**
-* @brief Function implementing the ledTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartTask03 */
 void ledTask(void *argument)
 {
-    uint8_t state = 0;
     uint8_t led_on = 0;
     for(;;)
     {
-        if(osMessageQueueGet(buttonQueueHandle, &state, NULL, 0) == osOK)
+        // Ждем семафор с таймаутом 100 мс
+        if(osSemaphoreAcquire(buttonSemaphoreHandle, 100) == osOK)
         {
-            if(state)
-            {
-                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
-                led_on = 1;
-            }
-            else
-            {
-                led_on = !led_on;
-                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (led_on) ? GPIO_PIN_RESET : GPIO_PIN_SET);
-            }
+            // получили сигнал об изменении, читаем актуальное состояние кнопки
         }
-        osDelay(state ? 10 : 250);
+        uint8_t button_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_14);
+
+        if(button_state == GPIO_PIN_RESET)
+        {
+            // Кнопка нажата — светодиод горит постоянно
+            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+            led_on = 1;
+        }
+        else
+        {
+            // Кнопка отпущена — мигаем светодиодом
+            led_on = !led_on;
+            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (led_on) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+        }
     }
 }
 
-/* USER CODE BEGIN Header_StartTask04 */
-/**
-* @brief Function implementing the lcdTask thread.
-* @param argument: Not used
-* @retval None
-*/
-/* USER CODE END Header_StartTask04 */
 void lcdTask(void *argument)
 {
-    uint8_t state = 0;
     uint8_t prev_state = 0xFF;
     for(;;)
     {
-        if(osMessageQueueGet(buttonQueueHandle, &state, NULL, 0) == osOK)
+        // Ждем семафор с таймаутом 100 мс
+        if(osSemaphoreAcquire(buttonSemaphoreHandle, 100) == osOK)
         {
-            if(state != prev_state)
-            {
-                HD44780_Clear();
-                HD44780_SetCursor(0,0);
-                if(state)
-                    HD44780_PrintStr("BTN has push");
-                else
-                    HD44780_PrintStr("BTN don't push");
-                prev_state = state;
-            }
+            // получили сигнал об изменении, читаем актуальное состояние кнопки
         }
-        osDelay(100);
+        uint8_t button_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_14);
+
+        if(button_state != prev_state)
+        {
+            HD44780_Clear();
+            HD44780_SetCursor(0,0);
+            if(button_state == GPIO_PIN_RESET)
+                HD44780_PrintStr("BTN has push");
+
+            else
+                HD44780_PrintStr("BTN don't push");
+            prev_state = button_state;
+        }
+        osDelay(50);
     }
 }
+
+
+
 
 
 /**
