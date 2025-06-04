@@ -48,8 +48,33 @@ I2C_HandleTypeDef hi2c1;
 
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
+osThreadId_t buttonTaskHandle;
+osThreadId_t ledTaskHandle;
+osThreadId_t lcdTaskHandle;
+osMessageQueueId_t buttonQueueHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for buttonTask */
+osThreadId_t buttonTaskHandle;
+const osThreadAttr_t buttonTask_attributes = {
+  .name = "buttonTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for ledTask */
+osThreadId_t ledTaskHandle;
+const osThreadAttr_t ledTask_attributes = {
+  .name = "ledTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
+/* Definitions for lcdTask */
+osThreadId_t lcdTaskHandle;
+const osThreadAttr_t lcdTask_attributes = {
+  .name = "lcdTask",
   .stack_size = 128 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
@@ -62,6 +87,9 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_I2C1_Init(void);
 void StartDefaultTask(void *argument);
+void buttonTask(void *argument);
+void ledTask(void *argument);
+void lcdTask(void *argument);
 
 /* USER CODE BEGIN PFP */
 
@@ -70,12 +98,19 @@ void StartDefaultTask(void *argument);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
+const osMessageQueueAttr_t buttonQueue_attributes = {
+  .name = "buttonQueue"
+};
+
+
+//volatile uint8_t button_pressed = 0;
 /* USER CODE END 0 */
 
 /**
   * @brief  The application entry point.
   * @retval int
   */
+
 int main(void)
 {
   /* USER CODE BEGIN 1 */
@@ -106,6 +141,7 @@ int main(void)
     HD44780_Clear();
     HD44780_SetCursor(0,0);
     HD44780_PrintStr("BTN don't push");
+    buttonQueueHandle = osMessageQueueNew(1, sizeof(uint8_t), &buttonQueue_attributes);
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -131,12 +167,24 @@ int main(void)
   /* creation of defaultTask */
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
+  /* creation of buttonTask */
+  buttonTaskHandle = osThreadNew(buttonTask, NULL, &buttonTask_attributes);
+
+  /* creation of ledTask */
+  ledTaskHandle = osThreadNew(ledTask, NULL, &ledTask_attributes);
+
+  /* creation of lcdTask */
+  lcdTaskHandle = osThreadNew(lcdTask, NULL, &lcdTask_attributes);
+
   /* USER CODE BEGIN RTOS_THREADS */
   /* add threads, ... */
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
   /* add events, ... */
+  osThreadNew(buttonTask, NULL, &buttonTask_attributes);
+  osThreadNew(ledTask, NULL, &ledTask_attributes);
+  osThreadNew(lcdTask, NULL, &lcdTask_attributes);
   /* USER CODE END RTOS_EVENTS */
 
   /* Start scheduler */
@@ -151,6 +199,7 @@ int main(void)
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
+
 }
 
 /**
@@ -269,43 +318,96 @@ static void MX_GPIO_Init(void)
   * @retval None
   */
 /* USER CODE END Header_StartDefaultTask */
-
 void StartDefaultTask(void *argument)
 {
-    uint8_t previous_button_state = GPIO_PIN_SET;
-    uint8_t inte = 0;
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END 5 */
+}
 
+/* USER CODE BEGIN Header_StartTask02 */
+/**
+* @brief Function implementing the buttonTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask02 */
+void buttonTask(void *argument)
+{
+    uint8_t state;
     for(;;)
     {
-        uint8_t current_button_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_14);
-
-        if(current_button_state == GPIO_PIN_RESET) // кнопка нажата
-        {
-            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET); // Включить светодиод
-            if(inte == 0) // если состояние изменилось
-            {
-                HD44780_Clear();
-                HD44780_SetCursor(0,0);
-                HD44780_PrintStr("BTN has push");
-                inte = 1;
-            }
-        }
-        else // кнопка отпущена
-        {
-            HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_SET); // Выключить светодиод
-            if(inte == 1) // если состояние изменилось
-            {
-                HD44780_Clear();
-                HD44780_SetCursor(0,0);
-                HD44780_PrintStr("BTN don't push");
-                inte = 0;
-            }
-        }
-
-        previous_button_state = current_button_state;
-        osDelay(10); // опрос каждые 10 мс
+        uint8_t current_state = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_14);
+        state = (current_state == GPIO_PIN_RESET) ? 1 : 0;
+        osMessageQueuePut(buttonQueueHandle, &state, 0, 0);
+        osDelay(10);
     }
 }
+
+/* USER CODE BEGIN Header_StartTask03 */
+/**
+* @brief Function implementing the ledTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask03 */
+void ledTask(void *argument)
+{
+    uint8_t state = 0;
+    uint8_t led_on = 0;
+    for(;;)
+    {
+        if(osMessageQueueGet(buttonQueueHandle, &state, NULL, 0) == osOK)
+        {
+            if(state)
+            {
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+                led_on = 1;
+            }
+            else
+            {
+                led_on = !led_on;
+                HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, (led_on) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+            }
+        }
+        osDelay(state ? 10 : 250);
+    }
+}
+
+/* USER CODE BEGIN Header_StartTask04 */
+/**
+* @brief Function implementing the lcdTask thread.
+* @param argument: Not used
+* @retval None
+*/
+/* USER CODE END Header_StartTask04 */
+void lcdTask(void *argument)
+{
+    uint8_t state = 0;
+    uint8_t prev_state = 0xFF;
+    for(;;)
+    {
+        if(osMessageQueueGet(buttonQueueHandle, &state, NULL, 0) == osOK)
+        {
+            if(state != prev_state)
+            {
+                HD44780_Clear();
+                HD44780_SetCursor(0,0);
+                if(state)
+                    HD44780_PrintStr("BTN has push");
+                else
+                    HD44780_PrintStr("BTN don't push");
+                prev_state = state;
+            }
+        }
+        osDelay(100);
+    }
+}
+
 
 /**
   * @brief  This function is executed in case of error occurrence.
